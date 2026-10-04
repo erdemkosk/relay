@@ -1,0 +1,21 @@
+{
+  "name": "bike-relay",
+  "version": "1.0.0",
+  "description": "Moto Courier Simulator co-op signaling server",
+  "main": "server.js",
+  "scripts": {
+    "test": "node test/protocol.test.js",
+    "start": "node server.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "ws": "^8.21.3"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "private": true
+}
