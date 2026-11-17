@@ -80,8 +80,11 @@ function fail(ws, reason, code = 4000) {
 
 function clientIp(req) {
   if (CFG.trustProxy) {
-    const fwd = String(req.headers['x-forwarded-for'] || '').split(',')[0].trim();
-    if (fwd) return fwd;
+    // En sağdaki değeri güvenilir proxy ekler; soldakiler istemcinin yazabildiği değerler.
+    const parts = String(req.headers['x-forwarded-for'] || '').split(',')
+      .map((s) => s.trim()).filter(Boolean);
+    const fwd = parts[parts.length - 1];
+    if (fwd) return fwd.replace(/^::ffff:/, '');
   }
   return String(req.socket.remoteAddress || '').replace(/^::ffff:/, '');
 }
@@ -95,6 +98,12 @@ function rateLimited(ip) {
   }
   rec.count += 1;
   return rec.count > CFG.rateMax;
+}
+
+function pruneRate(now = Date.now()) {
+  for (const [ip, rec] of rate) {
+    if (now - rec.start > CFG.rateWindowMs) rate.delete(ip);
+  }
 }
 
 function sameNat(a, b) {
@@ -127,7 +136,7 @@ function dropRoom(room, notice) {
     if (notice) send(ws, { type: notice });
     ws.close(4004, notice || 'room-closed');
   }
-  rooms.delete(room.id);
+  if (rooms.get(room.id) === room) rooms.delete(room.id);
   lobbyChanged();
   log('oda kapandı', room.id, notice || '');
 }
@@ -213,7 +222,8 @@ function leaveRoom(ws) {
   if (room.peers.size === 0) {
     if (room.graceTimer) clearTimeout(room.graceTimer);
     if (room.waitTimer) clearTimeout(room.waitTimer);
-    rooms.delete(room.id);
+    // dropRoom sonrası gecikmeli close olayları aynı kodla açılmış yeni odayı silmesin.
+    if (rooms.get(room.id) === room) rooms.delete(room.id);
   }
   lobbyChanged();
   log('ayrıldı', room.id, ws._peerId);
@@ -290,6 +300,7 @@ function createServer() {
   const wss = new WebSocketServer({ server, maxPayload: CFG.maxMessageBytes });
   wss.on('connection', handleConnection);
   const beat = setInterval(() => {
+    pruneRate();
     for (const ws of wss.clients) {
       if (!ws._alive) { ws.terminate(); continue; }
       ws._alive = false;
@@ -297,7 +308,21 @@ function createServer() {
     }
   }, CFG.heartbeatMs);
   server.on('close', () => clearInterval(beat));
+  server.wss = wss;
   return server;
+}
+
+/** Açık WebSocket'leri kapatıp sunucuyu durdurur; takılan soketler için süre sınırı var. */
+function shutdown(server, timeoutMs = 5000) {
+  return new Promise((resolve) => {
+    const force = setTimeout(() => {
+      for (const ws of server.wss.clients) ws.terminate();
+    }, timeoutMs);
+    force.unref();
+    for (const ws of server.wss.clients) ws.close(1001, 'shutdown');
+    server.wss.close();
+    server.close(() => { clearTimeout(force); resolve(); });
+  });
 }
 
 if (require.main === module) {
@@ -306,9 +331,15 @@ if (require.main === module) {
   }
   const server = createServer();
   server.listen(CFG.port, CFG.host, () => log(`dinleniyor ${CFG.host}:${CFG.port}`));
-  const stop = () => server.close(() => process.exit(0));
+  let stopping = false;
+  const stop = () => {
+    if (stopping) return;
+    stopping = true;
+    log('kapanıyor');
+    shutdown(server).then(() => process.exit(0));
+  };
   process.on('SIGINT', stop);
   process.on('SIGTERM', stop);
 }
 
-module.exports = { createServer, CFG, rooms };
+module.exports = { createServer, shutdown, CFG, rooms, rate, pruneRate, clientIp };

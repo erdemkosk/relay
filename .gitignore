@@ -2,3 +2,6 @@
 .env
 .env.*
 *.env
+
+# Sunucuda kurulu Node kullanılır; dağıtım klasörü repoda tutulmaz
+node/
